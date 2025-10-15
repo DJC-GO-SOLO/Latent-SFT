@@ -1,0 +1,1206 @@
+Only in sglang: .git
+Only in sglang/assets: logo_square.png
+Only in sglang/benchmark/llava_bench: questions.jsonl
+Only in sglang/benchmark/llm_judge: articles.jsonl
+Only in sglang/benchmark/react: hotpotqa_100.jsonl
+Only in sglang/benchmark/reasoning_benchmark: figure
+Only in sglang/examples/frontend_language/usage/triton/models/character_generation: 1
+diff -r sglang/python/sglang/srt/configs/model_config.py sglang_soft_thinking_pkg/python/sglang/srt/configs/model_config.py
+49a50,57
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         enable_soft_thinking: Optional[bool] = None,
+>         max_topk: Optional[int] = None,
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+197a206,214
+> 
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.enable_soft_thinking = enable_soft_thinking
+>         self.max_topk = max_topk
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+diff -r sglang/python/sglang/srt/layers/logits_processor.py sglang_soft_thinking_pkg/python/sglang/srt/layers/logits_processor.py
+76a77,85
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     topk_probs: Optional[torch.Tensor] = None
+>     topk_indices: Optional[torch.Tensor] = None
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+diff -r sglang/python/sglang/srt/layers/sampler.py sglang_soft_thinking_pkg/python/sglang/srt/layers/sampler.py
+44a45,51
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         enable_soft_thinking: bool = False,
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+58a66,72
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         probs_clone = None
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+74c88,90
+<             batch_next_token_ids = torch.argmax(logits, -1)
+---
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+76a93,114
+>             batch_next_token_ids = torch.argmax(logits, -1)
+>             if enable_soft_thinking:
+>                 # logits_output.topk_probs, logits_output.topk_indices 
+>                 # logits.div_(sampling_info.temperatures)
+>                 # logits[:] = torch.softmax(logits, dim=-1)
+>                 # probs = logits
+>                 # del logits
+>                 # # determine how many top-k to keep (at least 1)
+>                 # # 只用argmax，不用topk以提升速度
+>                 # max_k = max(1, sampling_info.max_topk if sampling_info.max_topk is not None else 1)
+>                 # logits_output.topk_probs = torch.zeros(probs.shape[0], max_k, dtype=probs.dtype, device=probs.device)
+>                 # logits_output.topk_indices = torch.zeros(probs.shape[0], max_k, dtype=torch.long, device=probs.device)
+>                 
+>                 # # 取对应位置的概率，其余为0
+>                 # logits_output.topk_probs[:, 0] = torch.gather(probs, 1, batch_next_token_ids.unsqueeze(1)).squeeze(1)
+>                 logits_output.topk_probs[:, 0] = 1
+>                 logits_output.topk_indices[:, 0] = batch_next_token_ids
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+>             else:
+>                 pass
+94a133,135
+>                 # ==========
+>                 # begin of soft thinking
+>                 # ==========
+96,101c137,191
+<                 if sampling_info.need_min_p_sampling:
+<                     probs = top_k_renorm_prob(probs, sampling_info.top_ks)
+<                     probs = top_p_renorm_prob(probs, sampling_info.top_ps)
+<                     batch_next_token_ids = min_p_sampling_from_probs(
+<                         probs, sampling_info.min_ps
+<                     )
+---
+>                 if enable_soft_thinking:
+>                     # calculate the entropy
+>                     entropy = -torch.sum(probs * torch.log(probs.clamp(min=1e-12)), dim=-1)
+>                     soft_mask = sampling_info.soft_thinking_modes # Shape (B,)
+>                     top_ps = torch.where(soft_mask, sampling_info.top_ps, sampling_info.after_thinking_top_ps)
+>                     top_ks = torch.where(soft_mask, sampling_info.top_ks, sampling_info.after_thinking_top_ks)
+>                     min_ps = torch.where(soft_mask, sampling_info.min_ps, sampling_info.after_thinking_min_ps)
+>                     dirichlet_alphas = sampling_info.dirichlet_alphas
+> 
+> 
+> 
+>                     # top k top p renorm
+>                     probs = top_k_renorm_prob(probs, top_ks)
+>                     probs = top_p_renorm_prob(probs, top_ps)
+> 
+>                     # minp renorm
+>                     if sampling_info.need_min_p_sampling or sampling_info.need_after_thinking_min_p_sampling: # slow
+>                         max_prob = probs.max(dim=-1, keepdim=True).values
+>                         min_p_thresholds = max_prob * min_ps.view(-1, 1)
+>                         min_p_mask = probs < min_p_thresholds
+>                         probs.masked_fill_(min_p_mask, 0.0)
+>                         probs = probs / probs.sum(dim=-1, keepdim=True)
+> 
+>                     # dirichlet noise (not used in paper)
+>                     if not sampling_info.is_all_no_noise: # slow
+>                         conc = probs[soft_mask] * dirichlet_alphas[soft_mask].view(-1, 1)
+>                         gamma_dist = torch.distributions.Gamma(conc, torch.ones_like(conc))
+>                         gamma_samples = gamma_dist.sample()
+>                         probs_new = gamma_samples / gamma_samples.sum(dim=-1, keepdim=True)
+>                         probs[soft_mask] = probs_new
+> 
+>                     # max top k
+>                     topk_probs, topk_indices = torch.topk(probs, k=sampling_info.max_topk, dim=-1) # slow
+>                     topk_probs = topk_probs / (topk_probs.sum(dim=-1, keepdim=True))
+> 
+>                     # after thinking sampling
+>                     non_soft_mask = ~soft_mask
+>                     if any(non_soft_mask):
+>                         sampled_token_ids = torch.multinomial(probs, num_samples=1)
+> 
+>                         # For rows where soft_thinking_modes is False
+>                         topk_probs[non_soft_mask] = 0.0
+>                         topk_indices[non_soft_mask] = 0
+> 
+>                         # Assign the first element of each row to sampled_token_ids and set it to 1.0 in topk_probs
+>                         topk_probs[non_soft_mask, 0] = 1.0
+>                         topk_indices[non_soft_mask, 0] = sampled_token_ids[non_soft_mask].view(-1)
+> 
+>                     logits_output.topk_probs = topk_probs
+>                     logits_output.topk_indices = topk_indices
+>                     logits_output.entropy = entropy
+>                     batch_next_token_ids = topk_indices[:, 0].to(torch.int32)
+>                 # ==========
+>                 # end of soft thinking
+>                 # ========== 
+103,111c193,208
+<                     # Check Nan will throw exception, only check when crash_on_warnings is True
+<                     check_nan = self.use_nan_detection and crash_on_warnings()
+<                     batch_next_token_ids = top_k_top_p_sampling_from_probs(
+<                         probs,
+<                         sampling_info.top_ks,
+<                         sampling_info.top_ps,
+<                         filter_apply_order="joint",
+<                         check_nan=check_nan,
+<                     )
+---
+>                     if sampling_info.need_min_p_sampling:
+>                         probs = top_k_renorm_prob(probs, sampling_info.top_ks)
+>                         probs = top_p_renorm_prob(probs, sampling_info.top_ps)
+>                         batch_next_token_ids = min_p_sampling_from_probs(
+>                             probs, sampling_info.min_ps
+>                         )
+>                     else:
+>                         # Check Nan will throw exception, only check when crash_on_warnings is True
+>                         check_nan = self.use_nan_detection and crash_on_warnings()
+>                         batch_next_token_ids = top_k_top_p_sampling_from_probs(
+>                             probs,
+>                             sampling_info.top_ks,
+>                             sampling_info.top_ps,
+>                             filter_apply_order="joint",
+>                             check_nan=check_nan,
+>                         )
+113a211
+>                 raise NotImplementedError("Pytorch sampling backend is not implemented")
+127a226
+>                 
+270c369
+<     return output_token_ids_logprobs_val, output_token_ids_logprobs_idx
+---
+>     return output_token_ids_logprobs_val, output_token_ids_logprobs_idx
+\ No newline at end of file
+diff -r sglang/python/sglang/srt/layers/vocab_parallel_embedding.py sglang_soft_thinking_pkg/python/sglang/srt/layers/vocab_parallel_embedding.py
+146d145
+< @torch.jit.script
+490a490,565
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     # topk_probs is not None and topk_indices
+>     def weighted_forward(self, topk_probs: torch.Tensor, topk_indices: torch.Tensor) -> torch.Tensor:
+>         """Single-GPU weighted embedding forward.
+> 
+>         Args:
+>             topk_probs: [B, K] tensor of probabilities for top-K tokens.
+>             topk_indices: [B, K] tensor of token indices for top-K tokens.
+> 
+>         Returns:
+>             hidden_states: [B, D] weighted embedding.
+>         """
+> 
+>         # Validate inputs
+>         assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
+> 
+>         # Use quant_method.embedding for consistency
+>         topk_embeddings = self.quant_method.embedding(self, topk_indices.long())  # [B, K, D]
+>         # Normalize probs to sum to 1.0 along last dim.
+>         topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True) # do norm here
+>         hidden_states = torch.sum(topk_probs.unsqueeze(-1) * topk_embeddings, dim=1, dtype=topk_embeddings.dtype)  # [B, D]
+>         return hidden_states
+> 
+>     def weighted_forward_tp(self, topk_probs: torch.Tensor, topk_indices: torch.Tensor) -> torch.Tensor:
+>         """Tensor Parallel weighted embedding forward.
+> 
+>         Args:
+>             topk_probs: [B, K] tensor of probabilities for top-K tokens.
+>             topk_indices: [B, K] tensor of token indices for top-K tokens.
+> 
+>         Returns:
+>             hidden_states: [B, D] weighted embedding after TP all-reduce.
+>         """
+>         # Validate inputs
+>         assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
+>         # Normalize probs to sum to 1.0 along last dim.
+>         # topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
+>         masked_indices, input_mask = self.get_masked_indices_and_mask(
+>             topk_indices,
+>             self.shard_indices.org_vocab_start_index,
+>             self.shard_indices.org_vocab_end_index,
+>         )
+>         topk_embeddings: torch.Tensor = self.quant_method.embedding(self, masked_indices.long())  # [B, K, D]
+>         input_mask = input_mask.unsqueeze(-1)  # [B, K, 1]
+>         topk_embeddings.masked_fill_(input_mask, 0)  # Zero out invalid indices
+>         hidden_states_parallel = torch.sum(
+>             topk_probs.unsqueeze(-1) * topk_embeddings, dim=1, dtype=topk_embeddings.dtype
+>         )  # [B, D]
+>         hidden_states = tensor_model_parallel_all_reduce(hidden_states_parallel)
+>         return hidden_states
+>     def get_masked_indices_and_mask(
+>         self,
+>         indices: torch.Tensor,
+>         org_vocab_start_index: int,
+>         org_vocab_end_index: int,
+>     ) -> Tuple[torch.Tensor, torch.Tensor]:
+>         """Map indices to current GPU's vocab shard and generate mask.
+> 
+>         Args:
+>             indices: [B, K] tensor of token indices.
+>             org_vocab_start_index: Start index of current GPU's vocab shard.
+>             org_vocab_end_index: End index of current GPU's vocab shard.
+> 
+>         Returns:
+>             masked_indices: [B, K] mapped indices for current shard.
+>             vocab_mask: [B, K] boolean mask (True for invalid indices).
+>         """
+>         vocab_mask = (indices >= org_vocab_start_index) & (indices < org_vocab_end_index)
+>         valid_offset = org_vocab_start_index * vocab_mask
+>         masked_indices = vocab_mask * (indices - valid_offset)
+>         return masked_indices, ~vocab_mask
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+diff -r sglang/python/sglang/srt/managers/detokenizer_manager.py sglang_soft_thinking_pkg/python/sglang/srt/managers/detokenizer_manager.py
+231a232,239
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             output_topk_probs_list=recv_obj.output_topk_probs_list,
+>             output_topk_indices_list=recv_obj.output_topk_indices_list,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+diff -r sglang/python/sglang/srt/managers/io_struct.py sglang_soft_thinking_pkg/python/sglang/srt/managers/io_struct.py
+603a604,612
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     # Soft thinking
+>     output_topk_probs_list: List[List[List[float]]]
+>     output_topk_indices_list: List[List[List[int]]]
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+604a614
+> 
+650a661,668
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     output_topk_probs_list: List[List[List[float]]]
+>     output_topk_indices_list: List[List[List[int]]]
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+diff -r sglang/python/sglang/srt/managers/schedule_batch.py sglang_soft_thinking_pkg/python/sglang/srt/managers/schedule_batch.py
+409a410,417
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         enable_soft_thinking: bool = False,
+>         max_topk: Optional[int] = None,
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+433a442
+>         self.sampling_params.think_end_str_id = None
+565a575,604
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.enable_soft_thinking = enable_soft_thinking
+>         if self.enable_soft_thinking:
+>             self.sampling_params.post_init_soft_thinking_mode()
+>             # 正确初始化方式
+>             self.topk_prob = torch.empty(
+>                 max_topk,  # 注意：直接传尺寸数字，不要用元组
+>                 dtype=torch.bfloat16,
+>                 device=torch.device('cuda:0')  # 明确指定设备索引
+>             ).fill_(float('nan'))
+> 
+>             self.topk_idx = torch.full(
+>                 (max_topk,),  # full()可以接受元组
+>                 -1,
+>                 dtype=torch.int64,
+>                 device=torch.device('cuda:0')
+>             )
+>             # NOTE: 输入的部分暂时不进行保留。 shape: [output_len, K]
+>             self.output_topk_prob_list = []
+>             self.output_topk_idx_list = []
+>             self.output_topk_prob_list_tmp = []
+>             self.output_topk_idx_list_tmp = []
+>             # track consecutive low entropy steps for early stopping
+>             self.low_entropy_steps = 0
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+674d712
+< 
+684a723,731
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     def update_topk_info(self, logits_output, index):
+>         # 更新 topk 信息
+>         self.topk_prob = logits_output.topk_probs[index]
+>         self.topk_idx = logits_output.topk_indices[index]
+>         self.entropy = logits_output.entropy[index]
+>         # last_token_id = self.output_ids[-1]
+685a733,784
+>         if self.sampling_params.soft_thinking_mode:
+>             if self.sampling_params.think_end_str_id is None:
+>                 self.sampling_params.think_end_str_id = self.tokenizer.encode(self.sampling_params.think_end_str,add_special_tokens=False)[-1]
+>             # early stopping: replace with think_end_str_id if entropy remains low
+>             if self.sampling_params.early_stopping_entropy_threshold > 0:
+>                 if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
+>                     self.low_entropy_steps += 1
+>                 else:
+>                     self.low_entropy_steps = 0
+>                 if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
+>                     print(f"Early stopping triggered", flush=True)
+>                     # trigger early stop, emit think_end_str token
+>                     self.output_ids[-1] = self.sampling_params.think_end_str_id
+>                     self.topk_prob[1:].fill_(0)
+>                     self.topk_idx[1:].fill_(0)
+>                     self.topk_prob[0] = 1.0
+>                     self.topk_idx[0] = self.sampling_params.think_end_str_id
+> 
+>             if self.sampling_params.think_end_str_id == self.output_ids[-1]:
+>                 # 退出 soft thinking 模式并将 topk 设置为 one-hot
+>                 self.sampling_params.soft_thinking_mode = False
+>                 # 一键清零再设置 head
+>                 self.topk_prob[1:].fill_(0)
+>                 self.topk_idx[1:].fill_(0)
+>                 self.topk_prob[0] = 1.0
+>                 self.topk_idx[0] = self.sampling_params.think_end_str_id
+>         else:
+>             # 普通模式下只需 in-place 清零 tail，head 保持 logits 输出
+>             self.topk_prob[1:].fill_(0)
+>             self.topk_idx[1:].fill_(0)
+>             self.topk_prob[0] = 1.0
+> 
+>         # 仅在未完成时记录 topk 信息
+>         if not self.finished():
+>             self.output_topk_prob_list_tmp.append(self.topk_prob)
+>             self.output_topk_idx_list_tmp.append(self.topk_idx)
+> 
+>     def get_output_topk_prob_list(self):
+>         if self.output_topk_prob_list_tmp:
+>             self.output_topk_prob_list.extend(torch.stack(self.output_topk_prob_list_tmp, dim=0).cpu().tolist())
+>             self.output_topk_prob_list_tmp = []
+>         return self.output_topk_prob_list
+> 
+>     def get_output_topk_idx_list(self):
+>         if self.output_topk_idx_list_tmp:
+>             self.output_topk_idx_list.extend(torch.stack(self.output_topk_idx_list_tmp, dim=0).cpu().tolist())
+>             self.output_topk_idx_list_tmp = []
+>         return self.output_topk_idx_list
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+794a894,905
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     # For soft thinking mode
+>     enable_soft_thinking: bool = None
+>     max_topk: Optional[int] = None
+>     topk_probs: Optional[torch.Tensor] = None
+>     topk_indices: Optional[torch.Tensor] = None
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+822a934,941
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             enable_soft_thinking=model_config.enable_soft_thinking,
+>             max_topk=model_config.max_topk,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+1528a1648,1656
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         topk_probs = None
+>         topk_indices = None
+>         if self.model_config.enable_soft_thinking:
+>             if self.enable_overlap or self.forward_mode.is_decode():
+>                 topk_probs = torch.stack([req.topk_prob for req in self.reqs])
+>                 topk_indices = torch.stack([req.topk_idx for req in self.reqs])
+1529a1658,1662
+>         capture_hidden_mode = self._get_capture_hidden_mode()
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+1561,1571c1694
+<             capture_hidden_mode=(
+<                 CaptureHiddenMode.FULL
+<                 if self.return_hidden_states
+<                 else (
+<                     getattr(
+<                         self.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
+<                     )
+<                     if self.spec_info
+<                     else CaptureHiddenMode.NULL
+<                 )
+<             ),
+---
+>             capture_hidden_mode=capture_hidden_mode,
+1573a1697,1704
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             topk_probs=topk_probs,
+>             topk_indices=topk_indices,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+1575c1706,1722
+< 
+---
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     def _get_capture_hidden_mode(self):
+>         if self.enable_soft_thinking:
+>             if self.spec_info is not None:
+>                 self.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
+>             return CaptureHiddenMode.LAST
+>         elif self.return_hidden_states:
+>             return CaptureHiddenMode.FULL
+>         elif self.spec_info:
+>             return getattr(self.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL)
+>         else:
+>             return CaptureHiddenMode.NULL
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+1657a1805,1814
+> 
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     # For soft thinking mode
+>     topk_probs: Optional[torch.Tensor] = None
+>     topk_indices: Optional[torch.Tensor] = None
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+diff -r sglang/python/sglang/srt/managers/scheduler.py sglang_soft_thinking_pkg/python/sglang/srt/managers/scheduler.py
+429a430,437
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.enable_soft_thinking = server_args.enable_soft_thinking
+>         self.max_topk = server_args.max_topk
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+442a451,458
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             enable_soft_thinking=server_args.enable_soft_thinking,
+>             max_topk=server_args.max_topk,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+618d633
+< 
+796a812,813
+>                 enable_soft_thinking=self.enable_soft_thinking,
+>                 max_topk=self.max_topk,
+diff -r sglang/python/sglang/srt/managers/scheduler_output_processor_mixin.py sglang_soft_thinking_pkg/python/sglang/srt/managers/scheduler_output_processor_mixin.py
+126a127,134
+>                     # ==========
+>                     # begin of soft thinking
+>                     # ==========
+>                     if self.enable_soft_thinking:
+>                         req.update_topk_info(logits_output, i)   
+>                     # ==========
+>                     # end of soft thinking
+>                     # ==========
+235a244
+> 
+266a276,285
+> 
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             if self.enable_soft_thinking:
+>                 req.update_topk_info(logits_output, i)
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+>         
+271d289
+< 
+273c291
+< 
+---
+>         
+506a525,534
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         # Always initialize soft thinking output lists so they exist regardless of flag
+>         output_topk_probs_list = []
+>         output_topk_indices_list = []
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+524c552
+<                     and len(req.output_ids) % 50 == 0
+---
+>                     and len(req.output_ids) % 16384 == 0
+575a604,612
+>                 # ==========
+>                 # begin of soft thinking
+>                 # ==========
+>                 if self.enable_soft_thinking:
+>                     output_topk_probs_list.append(req.get_output_topk_prob_list())
+>                     output_topk_indices_list.append(req.get_output_topk_idx_list())
+>                 # ==========
+>                 # end of soft thinking
+>                 # ==========
+576a614,615
+> 
+> 
+608a648,655
+>                     # ==========
+>                     # begin of soft thinking
+>                     # ==========
+>                     output_topk_probs_list,
+>                     output_topk_indices_list,
+>                     # ==========
+>                     # end of soft thinking
+>                     # ==========
+610a658
+> 
+diff -r sglang/python/sglang/srt/managers/tokenizer_manager.py sglang_soft_thinking_pkg/python/sglang/srt/managers/tokenizer_manager.py
+173a174,181
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             enable_soft_thinking=server_args.enable_soft_thinking,
+>             max_topk=server_args.max_topk,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+355a364,370
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.enable_soft_thinking = server_args.enable_soft_thinking
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+1044a1060,1067
+> 
+>             if self.enable_soft_thinking:
+>                 meta_info["output_topk_prob_list"] = (
+>                     recv_obj.output_topk_probs_list[i]
+>                 )
+>                 meta_info["output_topk_idx_list"] = (
+>                     recv_obj.output_topk_indices_list[i]
+>                 ) 
+diff -r sglang/python/sglang/srt/managers/tp_worker.py sglang_soft_thinking_pkg/python/sglang/srt/managers/tp_worker.py
+73a74,81
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             enable_soft_thinking=server_args.enable_soft_thinking,
+>             max_topk=server_args.max_topk,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+diff -r sglang/python/sglang/srt/managers/tp_worker_overlap_thread.py sglang_soft_thinking_pkg/python/sglang/srt/managers/tp_worker_overlap_thread.py
+48a49,72
+> # ==========
+> # begin of soft thinking
+> # ==========
+> # TODO@Ao: 初始化topk info为-1 tensor而不是None
+> @torch.compile(dynamic=True, backend=get_compiler_backend())
+> def resolve_future_topk_info(
+>     topk_probs, topk_indices, future_topk_probs_map, future_topk_indices_map
+> ):
+>     # 直接比较（topk_indices 已经是 Tensor，且 None 已被替换为 -1）
+>     mask = topk_indices < 0
+>     
+>     topk_probs[:] = torch.where(
+>         mask,
+>         future_topk_probs_map[torch.clamp(-topk_indices, min=0)],
+>         topk_probs,
+>     )
+>     topk_indices[:] = torch.where(
+>         mask,
+>         future_topk_indices_map[torch.clamp(-topk_indices, min=0)],
+>         topk_indices,
+>     )
+> # ==========
+> # end of soft thinking
+> # ==========
+50d73
+< 
+86a110,132
+>         
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.enable_soft_thinking = server_args.enable_soft_thinking
+>         if self.enable_soft_thinking:
+>             self.max_topk = server_args.max_topk
+>             self.think_end_str = server_args.think_end_str
+>             self.future_topk_probs_map = torch.full(
+>                 (self.max_running_requests * 5, self.max_topk),
+>                 float('nan'),  # or 0.0
+>                 dtype=self.worker.model_runner.dtype,
+>                 device=self.device,
+>             )
+>             self.future_topk_indices_map = torch.full(
+>                 (self.max_running_requests * 5, self.max_topk),
+>                 -1,  # Sentinel value
+>                 dtype=torch.int64,
+>                 device=self.device,
+>             )
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+139a186,225
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             if self.enable_soft_thinking:
+>                 topk_probs = model_worker_batch.topk_probs
+>                 topk_indices = model_worker_batch.topk_indices
+>                 sampling_info = model_worker_batch.sampling_info
+>                 soft_thinking_mask = sampling_info.soft_thinking_modes  # [batch_size]
+>                 # TODO: 这个逻辑有问题，是string
+>                 think_end_mask = (input_ids == self.think_end_str)  # [batch_size]
+>                 
+>                 # Only process sequences where soft_thinking_modes=True and input_id=think_end_str
+>                 update_mask = soft_thinking_mask & think_end_mask
+>                 
+>                 if update_mask.any():
+>                     # Reset soft_thinking_modes for matching sequences
+>                     sampling_info.soft_thinking_modes[update_mask] = False
+>                     
+>                     # Reinitialize topk_probs and topk_indices as one-hot for matching sequences
+>                     topk_probs[update_mask] = float('nan')
+>                     topk_indices[update_mask] = -1
+>                     
+>                     # Set one-hot probabilities and store input_id at the first position
+>                     topk_probs[update_mask, 0] = 1.0  # One-hot probability at index 0
+>                     topk_indices[update_mask, 0] = input_ids[update_mask]
+> 
+>                 # Update future_topk_info
+>                 resolve_future_topk_info(
+>                     topk_probs, topk_indices, 
+>                     self.future_topk_probs_map, 
+>                     self.future_topk_indices_map,
+>                 )
+>                 
+>                 batch_len = len(model_worker_batch.seq_lens)
+>                 future_slice = slice(future_token_ids_ct + 1, future_token_ids_ct + 1 + batch_len)
+>                 self.future_topk_probs_map[future_slice] = topk_probs
+>                 self.future_topk_indices_map[future_slice] = topk_indices
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+diff -r sglang/python/sglang/srt/mem_cache/radix_cache.py sglang_soft_thinking_pkg/python/sglang/srt/mem_cache/radix_cache.py
+169a170
+>         start_time = time.time()
+198d198
+< 
+diff -r sglang/python/sglang/srt/model_executor/cuda_graph_runner.py sglang_soft_thinking_pkg/python/sglang/srt/model_executor/cuda_graph_runner.py
+222a223,226
+>         self.enable_soft_thinking = model_runner.server_args.enable_soft_thinking
+>         if self.enable_soft_thinking:
+>             self.max_topk = model_runner.server_args.max_topk
+> 
+225c229,232
+<             self.input_ids = torch.zeros((self.max_num_token,), dtype=torch.int64)
+---
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             self.input_ids = None if self.enable_soft_thinking else torch.zeros((self.max_num_token,), dtype=torch.int64) 
+232a240,244
+>             self.topk_probs = torch.zeros((self.max_bs, self.max_topk), dtype=self.model_runner.dtype) if self.enable_soft_thinking else None
+>             self.topk_indices = torch.zeros((self.max_bs, self.max_topk), dtype=torch.int64) if self.enable_soft_thinking else None
+>             # ==========
+>             # end of soft thinking
+>             # ==================
+373c385,398
+<         input_ids = self.input_ids[:num_tokens]
+---
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if self.enable_soft_thinking:
+>             input_ids = None
+>             topk_probs = self.topk_probs[:bs]
+>             topk_indices = self.topk_indices[:bs]
+>         else:
+>             input_ids = self.input_ids[:num_tokens]
+>             topk_probs = None
+>             topk_indices = None
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+402c427,432
+<         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
+---
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if self.enable_soft_thinking:
+>             self.capture_hidden_mode = CaptureHiddenMode.LAST
+>         elif self.capture_hidden_mode != CaptureHiddenMode.FULL:
+405a436,438
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+426a460,461
+>             topk_probs=topk_probs,
+>             topk_indices=topk_indices,
+463,465c498,509
+<         hidden_mode_from_spec_info = getattr(
+<             forward_batch.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
+<         )
+---
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if self.enable_soft_thinking:
+>             hidden_mode_from_spec_info = CaptureHiddenMode.LAST
+>         else:
+>             hidden_mode_from_spec_info = getattr(
+>                 forward_batch.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
+>             )
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+498c542,556
+<         self.input_ids[:raw_num_token].copy_(forward_batch.input_ids)
+---
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if self.enable_soft_thinking:
+>             self.topk_probs[:raw_bs].copy_(
+>                 forward_batch.topk_probs
+>             )
+>             self.topk_indices[:raw_bs].copy_(
+>                 forward_batch.topk_indices
+>             )
+>         else:
+>             self.input_ids[:raw_num_token].copy_(forward_batch.input_ids)
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+542c600,609
+<             self.input_ids[: self.raw_num_token].copy_(forward_batch.input_ids)
+---
+>             if self.enable_soft_thinking:
+>                 bs = forward_batch.batch_size
+>                 self.topk_probs[: bs].copy_(
+>                     forward_batch.topk_probs
+>                 )
+>                 self.topk_indices[: bs].copy_(
+>                     forward_batch.topk_indices
+>                 )
+>             else:
+>                 self.input_ids[: self.raw_num_token].copy_(forward_batch.input_ids)
+diff -r sglang/python/sglang/srt/model_executor/forward_batch_info.py sglang_soft_thinking_pkg/python/sglang/srt/model_executor/forward_batch_info.py
+253a254,262
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     topk_probs: Optional[torch.Tensor] = None
+>     topk_indices: Optional[torch.Tensor] = None
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+292a302,309
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             topk_probs=batch.topk_probs,
+>             topk_indices=batch.topk_indices,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+diff -r sglang/python/sglang/srt/model_executor/model_runner.py sglang_soft_thinking_pkg/python/sglang/srt/model_executor/model_runner.py
+185a186,193
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.enable_soft_thinking = server_args.enable_soft_thinking
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+990,992c998,1013
+<         return self.model.forward(
+<             forward_batch.input_ids, forward_batch.positions, forward_batch
+<         )
+---
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if self.enable_soft_thinking:
+>             return self.model.forward(
+>                 None, 
+>                 forward_batch.positions, 
+>                 forward_batch,
+>             )
+>         else:
+>             return self.model.forward(
+>                 forward_batch.input_ids, forward_batch.positions, forward_batch
+>             )
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+1086a1108,1111
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+> 
+1092,1093c1117,1123
+<             forward_batch.token_ids_logprobs,
+<         )
+---
+>             forward_batch.token_ids_logprobs,  
+>             enable_soft_thinking=self.enable_soft_thinking,
+>         )   
+> 
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+diff -r sglang/python/sglang/srt/models/llama.py sglang_soft_thinking_pkg/python/sglang/srt/models/llama.py
+294a295,302
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.tp_size = get_tensor_model_parallel_world_size()
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+302c310,323
+<         if input_embeds is None:
+---
+>         
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if forward_batch.topk_probs is not None and forward_batch.topk_indices is not None:
+>             if self.tp_size > 1:
+>                 hidden_states = self.embed_tokens.weighted_forward_tp(
+>                     forward_batch.topk_probs, forward_batch.topk_indices
+>                 )
+>             else:
+>                 hidden_states = self.embed_tokens.weighted_forward(
+>                     forward_batch.topk_probs, forward_batch.topk_indices
+>                 )  
+>         elif input_embeds is None:
+305a327,330
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+diff -r sglang/python/sglang/srt/models/qwen2.py sglang_soft_thinking_pkg/python/sglang/srt/models/qwen2.py
+266a267,274
+>         
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.tp_size = get_tensor_model_parallel_world_size()
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+284c292,304
+<         if input_embeds is None:
+---
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         if forward_batch.topk_probs is not None and forward_batch.topk_indices is not None:
+>             if self.tp_size > 1:
+>                 hidden_states = self.embed_tokens.weighted_forward_tp(
+>                     forward_batch.topk_probs, forward_batch.topk_indices
+>                 )
+>             else:
+>                 hidden_states = self.embed_tokens.weighted_forward(
+>                     forward_batch.topk_probs, forward_batch.topk_indices
+>                 )  
+>         elif input_embeds is None:
+287a308,310
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+diff -r sglang/python/sglang/srt/sampling/sampling_batch_info.py sglang_soft_thinking_pkg/python/sglang/srt/sampling/sampling_batch_info.py
+29a30,37
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     is_all_no_noise: bool
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+31a40
+>     need_after_thinking_min_p_sampling: bool
+57a67,85
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+> 
+>     enable_soft_thinking: bool = False
+>     soft_thinking_modes: Optional[torch.Tensor] = None
+>     max_topk: Optional[int] = None
+>     # After thinking sampling params
+>     after_thinking_temperatures: Optional[torch.Tensor] = None
+>     after_thinking_top_ps: Optional[torch.Tensor] = None
+>     after_thinking_top_ks: Optional[torch.Tensor] = None
+>     after_thinking_min_ps: Optional[torch.Tensor] = None
+>     dirichlet_alphas: Optional[torch.Tensor] = None
+>     early_stopping_entropy_threshold: Optional[torch.Tensor] = None
+>     early_stopping_length_threshold: Optional[torch.Tensor] = None
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+79a108,140
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         after_thinking_temperatures = (
+>             torch.tensor(
+>                 [r.sampling_params.after_thinking_temperature for r in reqs],
+>                 dtype=torch.float
+>             )
+>             .view(-1, 1)
+>             .to(device, non_blocking=True)
+>         )
+>         after_thinking_top_ps = torch.tensor(
+>             [r.sampling_params.after_thinking_top_p for r in reqs], dtype=torch.float
+>         ).to(device, non_blocking=True)
+>         after_thinking_top_ks = torch.tensor(
+>             [r.sampling_params.after_thinking_top_k for r in reqs], dtype=torch.int32
+>         ).to(device, non_blocking=True)
+>         after_thinking_min_ps = torch.tensor(
+>             [r.sampling_params.after_thinking_min_p for r in reqs], dtype=torch.float
+>         ).to(device, non_blocking=True)
+>         dirichlet_alphas = torch.tensor(
+>             [r.sampling_params.dirichlet_alpha for r in reqs], dtype=torch.float
+>         ).to(device, non_blocking=True)
+>         early_stopping_entropy_threshold = torch.tensor(
+>             [r.sampling_params.early_stopping_entropy_threshold for r in reqs], dtype=torch.float
+>         ).to(device, non_blocking=True)
+>         early_stopping_length_threshold = torch.tensor(
+>             [r.sampling_params.early_stopping_length_threshold for r in reqs], dtype=torch.int32
+>         ).to(device, non_blocking=True)
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+129a191,204
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         enable_soft_thinking = batch.enable_soft_thinking
+>         if enable_soft_thinking:
+>             soft_thinking_modes = torch.tensor([req.sampling_params.soft_thinking_mode for req in reqs], dtype=torch.bool).to(device, non_blocking=True)
+>             max_topk = batch.max_topk
+>         else:
+>             soft_thinking_modes = None
+>             max_topk = None
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+> 
+134a210,219
+>             # ==========
+>             # begin of soft thinking
+>             # ==========
+>             after_thinking_temperatures=after_thinking_temperatures,
+>             after_thinking_top_ps=after_thinking_top_ps,
+>             after_thinking_top_ks=after_thinking_top_ks,
+>             after_thinking_min_ps=after_thinking_min_ps,
+>             dirichlet_alphas=dirichlet_alphas,
+>             early_stopping_entropy_threshold=early_stopping_entropy_threshold,
+>             early_stopping_length_threshold=early_stopping_length_threshold,
+135a221,228
+>             is_all_no_noise=all(r.sampling_params.dirichlet_alpha >= 1.0e6 for r in reqs),
+>             need_after_thinking_min_p_sampling=any(r.sampling_params.after_thinking_min_p > 0 for r in reqs),
+>             enable_soft_thinking=batch.enable_soft_thinking,
+>             soft_thinking_modes=soft_thinking_modes,
+>             max_topk=max_topk,
+>             # ==========
+>             # end of soft thinking
+>             # ==========
+205c298
+<         for item in [
+---
+>         filter_list = [
+210c303,314
+<         ]:
+---
+>         ]
+>         if self.enable_soft_thinking:
+>             filter_list.append("soft_thinking_modes")
+>             filter_list.append("after_thinking_temperatures")
+>             filter_list.append("after_thinking_top_ps")
+>             filter_list.append("after_thinking_top_ks")
+>             filter_list.append("after_thinking_min_ps")
+>             filter_list.append("dirichlet_alphas")
+>             filter_list.append("early_stopping_entropy_threshold")
+>             filter_list.append("early_stopping_length_threshold")
+>         
+>         for item in filter_list:
+300c404
+<         for item in [
+---
+>         merge_list = [
+305c409,420
+<         ]:
+---
+>         ]
+>         if self.enable_soft_thinking:
+>             merge_list.append("soft_thinking_modes")
+>             merge_list.append("after_thinking_temperatures")
+>             merge_list.append("after_thinking_top_ps")
+>             merge_list.append("after_thinking_top_ks")
+>             merge_list.append("after_thinking_min_ps")
+>             merge_list.append("dirichlet_alphas")
+>             merge_list.append("early_stopping_entropy_threshold")
+>             merge_list.append("early_stopping_length_threshold")
+> 
+>         for item in merge_list:
+310a426
+>         self.is_all_no_noise |= other.is_all_no_noise
+311a428,429
+>         self.need_after_thinking_min_p_sampling |= other.need_after_thinking_min_p_sampling
+> 
+diff -r sglang/python/sglang/srt/sampling/sampling_params.py sglang_soft_thinking_pkg/python/sglang/srt/sampling/sampling_params.py
+15c15
+< 
+---
+> import torch
+38a39,52
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         after_thinking_temperature: float = 1.0,
+>         after_thinking_top_p: float = 1.0,
+>         after_thinking_top_k: int = -1,
+>         after_thinking_min_p: float = 0.0,
+>         dirichlet_alpha: float = 1.0,
+>         early_stopping_entropy_threshold: float = 0.0,
+>         early_stopping_length_threshold: int = 200,
+>         think_end_str: Optional[str] = None,
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+63a78,92
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         self.after_thinking_temperature = after_thinking_temperature
+>         self.after_thinking_top_p = after_thinking_top_p
+>         self.after_thinking_top_k = after_thinking_top_k
+>         self.after_thinking_min_p = after_thinking_min_p
+>         self.dirichlet_alpha = dirichlet_alpha
+>         self.early_stopping_entropy_threshold = early_stopping_entropy_threshold
+>         self.early_stopping_length_threshold = early_stopping_length_threshold
+>         self.soft_thinking_mode = None
+>         self.think_end_str = think_end_str
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+83a113,115
+>         if 0 <= self.after_thinking_temperature < _SAMPLING_EPS:
+>             self.after_thinking_temperature = 1.0
+>             self.after_thinking_top_k = 1
+85a118,119
+>         if self.after_thinking_top_k == -1:
+>             self.after_thinking_top_k = 1 << 30  # whole vocabulary
+99a134,149
+>         if self.after_thinking_temperature < 0.0:
+>             raise ValueError(
+>                 f"after_thinking_temperature must be non-negative, got {self.after_thinking_temperature}."
+>             )
+>         if not 0.0 < self.after_thinking_top_p <= 1.0:
+>             raise ValueError(f"after_thinking_top_p must be in (0, 1], got {self.after_thinking_top_p}.")
+>         if not 0.0 <= self.after_thinking_min_p <= 1.0:
+>             raise ValueError(f"after_thinking_min_p must be in [0, 1], got {self.after_thinking_min_p}.")
+>         if self.after_thinking_top_k < 1 or self.after_thinking_top_k == -1:
+>             raise ValueError(
+>                 f"after_thinking_top_k must be -1 (disable) or at least 1, got {self.after_thinking_top_k}."
+>             )
+>         if self.dirichlet_alpha < 0.0:
+>             raise ValueError(
+>                 f"dirichlet_alpha must be non-negative, got {self.dirichlet_alpha}."
+>             )
+153a204,207
+> 
+>     def post_init_soft_thinking_mode(self):
+>         # TODO: 换成cpu的，然后init的时候再传输，topk也是一样，会造成主卡显存不足
+>         self.soft_thinking_mode = torch.tensor(True, dtype=torch.bool, device='cuda') 
+\ No newline at end of file
+diff -r sglang/python/sglang/srt/server_args.py sglang_soft_thinking_pkg/python/sglang/srt/server_args.py
+199a200,209
+>     # ==========
+>     # begin of soft thinking
+>     # ==========
+>     enable_soft_thinking: bool = False
+>     think_end_str: str = "</think>"
+>     max_topk: int = 30
+>     # ==========
+>     # end of soft thinking
+>     # ==========
+> 
+1162a1173,1196
+> 
+>         # ==========
+>         # begin of soft thinking
+>         # ==========
+>         # Soft thinking mode
+>         parser.add_argument(
+>             "--enable-soft-thinking",
+>             action="store_true",
+>             help="Enable soft thinking mode"
+>         )
+>         
+>         parser.add_argument(
+>             "--think-end-str",
+>             type=str,
+>             default="</think>",
+>         )
+>         parser.add_argument(
+>             "--max-topk",
+>             type=int,
+>             default=ServerArgs.max_topk,
+>         )
+>         # ==========
+>         # end of soft thinking
+>         # ==========
+Only in sglang_soft_thinking_pkg/python/sglang/srt: utils
+Only in sglang/scripts: playground
+Only in sglang/sgl-router: Cargo.lock
+Only in sglang/test/lang: example_image.png
