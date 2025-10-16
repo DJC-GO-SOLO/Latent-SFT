@@ -1,0 +1,11 @@
+python=3.12.3
+Deepspeed==0.17.0
+datasets==3.6.0
+scikit-learn==1.7.0
+
+peft==0.15.2
+pylatexenc==2.10
+torch==2.5.1
+flash-attn==2.7.3 --no-build-isolation
+latex2sympy2==1.9.1
+word2number==1.1
