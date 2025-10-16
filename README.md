@@ -1,4 +1,5 @@
 # Latent Reasoning in LLMs as a Vocabulary-Space Superposition
+This is the official code repository for the latent-SFT paper. We provide the source code, which is very easy to hack into, for your convenience.
 ![](https://github.com/DJC-GO-SOLO/Latent-SFT/blob/main/figs/comparison.png)
 
 ## Abstract
@@ -8,3 +9,7 @@ Large language models (LLMs) demonstrate strong reasoning abilities with chain-o
 ![](https://github.com/DJC-GO-SOLO/Latent-SFT/blob/main/figs/overview.png)
 
 ## Usage
+### Data Preparation
+First, download the required datasets from the official [Hugging Face library](https://huggingface.co/datasets/DJCheng/Latent-SFT-Data/tree/main) and place them in the `./data` directory. This includes both the training and evaluation data needed for the model.
+
+### Dependent Libraries
