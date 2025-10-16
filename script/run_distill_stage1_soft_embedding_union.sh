@@ -4,7 +4,7 @@
 
 
 export WANDB_PROJECT='distill_latent_cot'
-export WANDB_API_KEY='f37866e5e1499f672a7382d9f78c9668990395af'
+export WANDB_API_KEY=''
 export NCCL_DEBUG="WARN" 
 
 
