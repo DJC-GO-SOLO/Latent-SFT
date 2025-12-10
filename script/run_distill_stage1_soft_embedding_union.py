@@ -77,7 +77,7 @@ def main():
     print('================================')
     set_seed(training_args.seed)
 
-    model = DistillLatentStage1DynamicSoftEmbedding3(
+    model = LatentSFTStage1Union(
         encoder_name_or_path=model_args.encoder_name_or_path,
         decoder_name_or_path=model_args.decoder_name_or_path,
         bfloat16=model_args.bfloat16,
