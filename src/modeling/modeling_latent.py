@@ -11,7 +11,6 @@ from torch import nn, Tensor
 from peft import LoraConfig, get_peft_model, PeftModel, TaskType, prepare_model_for_kbit_training,TrainableTokensConfig
 from transformers.file_utils import ModelOutput
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoModel
-from .utils import _get_batch_logps,filter_logits_by_labels
 from torch.distributions import Categorical
 logger = logging.getLogger(__name__)
 
