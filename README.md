@@ -89,7 +89,7 @@ The current reference environment uses:
 
 Download the training and evaluation data from Hugging Face:
 
-- [DJCheng/Latent-SFT-Data](https://huggingface.co/datasets/DJCheng/Latent-SFT-Data)
+- [DJCheng/Latent-Reasoning-Data](https://huggingface.co/datasets/DJCheng/Latent-Reasoning-Data)
 
 Place or extract the files under the repository-level `data/` directory:
 
