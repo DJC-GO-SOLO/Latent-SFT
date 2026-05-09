@@ -17,6 +17,7 @@
 
 ## News
 
+- **Latent GRPO**: Our follow-up RL-stage work extends latent-chain reasoning to GRPO-style reinforcement learning. See the paper here: [Latent GRPO](https://arxiv.org/pdf/2604.27998).
 - **2026-01-30**: The latest version of the paper is available on arXiv: [LLM Latent Reasoning as Chain of Superposition](https://arxiv.org/abs/2510.15522).
 - **Code release**: This repository provides the training, latent soft-label generation, LoRA merging, and evaluation pipeline used by Latent-SFT.
 
@@ -59,6 +60,8 @@ Latent-SFT/
     ├── stage1/
     └── stage2/
 ```
+
+Only core files and directories are shown here. Task-specific scripts, evaluation utilities, and generated outputs are omitted for brevity.
 
 The `{task}` suffix denotes the task or difficulty configuration. Current examples include:
 
@@ -105,7 +108,17 @@ After preparation, update the `train_data_path` field in the corresponding shell
 train_data_path="${REPO_ROOT}/data/<your-train-file>.jsonl"
 ```
 
-Each training example is expected to provide the fields required by the stage-specific data pipeline, such as `problem`, `solution`, and `cot_answer` depending on the stage.
+For the released task settings, use the following training and evaluation files:
+
+| Setting | Training file | In-domain evaluation file | OOD evaluation files |
+| --- | --- | --- | --- |
+| Low-difficulty tasks | `GSM8k-Aug-train.jsonl` | `GSM8k-Aug-test.jsonl` | `GSM8k-Hard-test.jsonl`<br>`Multiarith-test.jsonl`<br>`Svamp-test.jsonl` |
+| High-difficulty tasks | `OpenR1-Math-220k-v-train-4k.jsonl` | - | `Math-500-test.jsonl`<br>`GPQA-test.jsonl`<br>`AIME-2024-test.jsonl`<br>`AIME-2025-test.jsonl` |
+
+Training data examples are expected to contain the `problem`, `cot`, and `cot_answer` fields. Test data examples are expected to contain the `problem`, `solution`, and `answer` fields.
+
+> [!IMPORTANT]
+> The data-format handling in this codebase is tightly coupled to these schemas. When using your own data, please check the field names and contents carefully before training or evaluation.
 
 ## Training Pipeline
 
@@ -132,6 +145,10 @@ bash script/run_distill_stage2_{task}.sh
 
 Replace `{task}` with the desired task configuration, such as `gsm8k` or `math500`.
 
+Stage 1 is optimized through three consecutive steps rather than a single end-to-end run. The explicit vocabulary-space constraint makes latent-chain learning more structured, but it also slows convergence and makes the full encoder-decoder objective harder to optimize directly. We therefore first train the encoder, then train the decoder conditioned on the learned latent chains, and finally jointly optimize the encoder-decoder system.
+
+After each Stage-1 step, evaluate the corresponding checkpoint and use the best-performing checkpoint as the input to the next step. For low-difficulty tasks, we recommend using `GSM8k-Aug-test.jsonl` as the Stage-1 evaluation set; for high-difficulty tasks, we recommend using `Math-500-test.jsonl`.
+
 ### Step 1: Train the Stage-1 Encoder
 
 ```bash
@@ -154,6 +171,22 @@ Important parameters:
 - **`compression_rate`**: Controls how many explicit CoT tokens are compressed into one latent token. Larger values produce shorter latent chains but make optimization harder.
 - **`topk_interpolation`**: Controls the number of vocabulary tokens used to approximate each latent state as a lexical superposition. Larger values preserve more lexical information but increase memory and compute cost.
 
+Evaluate encoder checkpoints with:
+
+```bash
+python eval/eval_encoder_hf_batch.py \
+  --dataset <GSM8k|Math500> \
+  --data_path data/<your-eval-file>.jsonl \
+  --check_point <checkpoint-step> \
+  --encoder_name_or_path <path-to-stage1-encoder-run-dir> \
+  --decoder_name_or_path <path-or-hf-id-of-your-base-model> \
+  --save_path <path-to-save-eval-results> \
+  --compression_rate 2 \
+  --topk_interpolation 10
+```
+
+Here `--encoder_name_or_path` should point to the encoder run directory; the script loads `<encoder_name_or_path>/checkpoint-<check_point>/hf`. Keep `--compression_rate` and `--topk_interpolation` consistent with training, and select the best encoder checkpoint for Step 2.
+
 ### Step 2: Train the Stage-1 Decoder
 
 ```bash
@@ -172,6 +205,22 @@ topk_interpolation=10
 
 The `compression_rate` and `topk_interpolation` should remain consistent with the encoder configuration unless you intentionally run a new ablation.
 
+Evaluate decoder checkpoints with:
+
+```bash
+python eval/eval_decoder_hf_batch.py \
+  --dataset <GSM8k|Math500> \
+  --data_path data/<your-eval-file>.jsonl \
+  --check_point <checkpoint-step> \
+  --encoder_name_or_path <path-to-best-stage1-encoder-checkpoint-hf> \
+  --decoder_name_or_path <path-to-stage1-decoder-run-dir> \
+  --save_path <path-to-save-eval-results> \
+  --compression_rate 2 \
+  --topk_interpolation 10
+```
+
+Here `--encoder_name_or_path` should be the best encoder checkpoint selected after Step 1, while `--decoder_name_or_path` should point to the decoder run directory; the script loads `<decoder_name_or_path>/checkpoint-<check_point>/hf`. Use the best decoder checkpoint for Step 3.
+
 ### Step 3: Joint Stage-1 Optimization
 
 ```bash
@@ -189,6 +238,23 @@ topk_interpolation=10
 ```
 
 The union run saves LoRA adapter weights. These weights are used in the next step to generate latent soft labels.
+
+Evaluate union checkpoints with:
+
+```bash
+python eval/eval_union_hf_batch.py \
+  --dataset <GSM8k|Math500> \
+  --data_path data/<your-eval-file>.jsonl \
+  --check_point <checkpoint-step> \
+  --encoder_name_or_path <path-to-best-stage1-encoder-checkpoint-hf> \
+  --decoder_name_or_path <path-to-best-stage1-decoder-checkpoint-hf> \
+  --lora_path <path-to-stage1-union-run-dir> \
+  --save_path <path-to-save-eval-results> \
+  --compression_rate 2 \
+  --topk_interpolation 10
+```
+
+Here `--lora_path` should point to the union run directory; the script loads `<lora_path>/checkpoint-<check_point>/lora_adapter`. Use the best union checkpoint for latent soft-label generation.
 
 ### Step 4: Generate Latent Soft Labels
 
