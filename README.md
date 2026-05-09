@@ -1,120 +1,336 @@
-# Latent Reasoning in LLMs as a Vocabulary-Space Superposition
-This is the official code repository for the latent-SFT paper. We provide the source code, which is very easy to hack into, for your convenience.
-![](https://github.com/DJC-GO-SOLO/Latent-SFT/blob/main/figs/comparison.png)
+<div align="center">
+  <img src="figs/latent_reasoning_logo.png" alt="Latent-SFT logo" width="300"/>
 
-## Abstract
-Large language models (LLMs) demonstrate strong reasoning abilities with chain-of-thought prompting, but explicit reasoning introduces substantial computational overhead. Recent work on latent reasoning reduces this cost by reasoning in latent space without explicit supervision, but performance drops significantly. Our preliminary experiments suggest that this degradation stems from the unstructured latent space, which makes fitting latent tokens difficult. To address this, we restrict the latent space to the column space of the LLM vocabulary, treating latent reasoning as a superposition over vocabulary probabilities. Once latent reasoning concludes, it collapses into an eigenstate of explicit reasoning to yield the final answer. Based on this idea, we propose Latent-SFT, a two-stage learning framework. In the first stage, we design two specialized attention masks to guide the Latent Token Encoder in generating latent tokens, allowing the LLM to produce the correct answer conditioned on them. In the second stage, the Latent Token Encoder is discarded, and the LLM is directly trained to generate these latent tokens autonomously for latent reasoning, optimized with KL and CE losses. Latent-SFT sets a new state of the art on GSM8k, matching explicit SFT performance while cutting reasoning chains by up to 4× and outperforming prior latent methods. On Math500 and AIME24, lexical probability–based latent reasoning also clearly surpasses hidden-state–based approaches. Our metrics of effective compression rate and effective global parallelism further show that latent reasoning is both the compression of a single path and the superposition of multiple paths.
+  <h2>Latent-SFT: LLM Latent Reasoning as Chain of Superposition</h2>
 
-## Method
-![](https://github.com/DJC-GO-SOLO/Latent-SFT/blob/main/figs/overview.png)
+  <p>
+    <a href="https://arxiv.org/abs/2510.15522"><img src="https://img.shields.io/badge/arXiv-2510.15522-b31b1b.svg" alt="arXiv"/></a>
+    <a href="https://huggingface.co/datasets/DJCheng/Latent-SFT-Data"><img src="https://img.shields.io/badge/Data-HuggingFace-yellow.svg" alt="Hugging Face Data"/></a>
+    <img src="https://img.shields.io/badge/Python-3.12-blue.svg" alt="Python"/>
+    <img src="https://img.shields.io/badge/PyTorch-2.5.1-ee4c2c.svg" alt="PyTorch"/>
+  </p>
 
-## Usage
-### Data Preparation
-First, download the required datasets from the official [Hugging Face library](https://huggingface.co/datasets/DJCheng/Latent-SFT-Data/tree/main) and place them in the `./data` directory. This includes both the training and evaluation data needed for the model.
+  <p><strong>Official implementation of Latent-SFT, a two-stage framework for teaching LLMs to reason in vocabulary-space latent chains.</strong></p>
+</div>
 
-### Dependent Libraries
+---
+
+## News
+
+- **2026-01-30**: The latest version of the paper is available on arXiv: [LLM Latent Reasoning as Chain of Superposition](https://arxiv.org/abs/2510.15522).
+- **Code release**: This repository provides the training, latent soft-label generation, LoRA merging, and evaluation pipeline used by Latent-SFT.
+
+## Overview
+
+Latent reasoning aims to reduce the cost of explicit Chain-of-Thought (CoT) reasoning by allowing a model to perform intermediate reasoning in a compact latent form. However, unconstrained latent states can be difficult to optimize and may suffer from semantic ambiguity.
+
+**Latent-SFT** addresses this by viewing latent reasoning as a **chain of superposition** in the LLM vocabulary space. Instead of treating latent states as arbitrary hidden vectors, Latent-SFT represents each latent token as a probability distribution over the vocabulary. This yields a structured latent space that remains closely aligned with the model's pretrained lexical semantics.
+
+The framework is organized around three core components:
+
+- **Latent-Vocab**: Constrains latent states to the vocabulary embedding space through top-k lexical superposition.
+- **Latent-Chain**: Uses induction-supervision masking to distill compact latent chains from explicit CoT traces.
+- **Latent-Optim**: Trains the model to autonomously generate latent chains using CE and KL objectives, with optional stochastic Gumbel-Softmax perturbation for better generalization.
+
+<img src="figs/overview.png" alt="Latent-SFT overview" width="900"/>
+
+## Repository Structure
+
+```text
+Latent-SFT/
+├── config_zero1.json
+├── data/
+├── eval/
+├── figs/
+│   └── latent_reasoning_logo.svg
+├── generate_latent_soft_label_lora_batch.py
+├── generate_latent_soft_label_hf_batch.py
+├── merge_lora.py
+├── requirements.txt
+├── script/
+│   ├── run_distill_stage1_encoder_{task}.sh
+│   ├── run_distill_stage1_decoder_{task}.sh
+│   ├── run_distill_stage1_union_{task}.sh
+│   └── run_distill_stage2_{task}.sh
+└── src/
+    ├── modeling/
+    │   ├── modeling_stage1.py
+    │   └── modeling_stage2.py
+    ├── stage1/
+    └── stage2/
 ```
+
+The `{task}` suffix denotes the task or difficulty configuration. Current examples include:
+
+- `gsm8k`
+- `math500`
+
+## Installation
+
+We recommend using a clean Python environment.
+
+```bash
+conda create -n latent-sft python=3.12 -y
+conda activate latent-sft
 pip install -r requirements.txt
 ```
-> **Note:** Installing the flash-attn library is required and may take some time, depending on your system configuration.
 
-### COT-SFT Model Weights
-Currently, training is supported for two models: **llama3.2-instruct-1B** and **Deepseek-distill-qwen-7B**.
-The initialization weights can be downloaded from the following links:
-- [*llama3.2-instruct-1B-COT-SFT*](https://huggingface.co/DJCheng/Latent-SFT-Llama3.2-Instruct-1B-COT-SFT/tree/main)
-- [*Deepseek-distill-qwen-7B*](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B)
+The current reference environment uses:
 
-Since the **Deepseek-distill-qwen-7B** model has already been trained on the inference dataset, its original weights can be used directly without additional fine-tuning.
+- `python==3.12.3`
+- `torch==2.5.1`
+- `Deepspeed==0.17.0`
+- `peft==0.15.2`
+- `flash-attn==2.7.3`
 
-### Training phases
-The training pipeline consists of two sequential phases. In Phase 1, latent tokens are generated. In Phase 2, the LLM is trained to autonomously generate these latent tokens, enabling latent planning during inference.
-#### Phase 1: Generating Latent Tokens
-Due to the limitations of *soft embeddings*, the learning process becomes more challenging. To address this, we adopt a three-step optimization strategy to facilitate model convergence.
-##### Step 1: Training the encoder
-The training script to be executed for this part is:
-```
-cd script
-./run_distill_stage1_soft_embedding_encoder.sh
-```
-> Pay close attention to the path-related parameters in the script, including the path for saving the model and the path for loading the initial model weights.
-> Additionally, you may adjust various training hyperparameters (e.g., learning rate, batch size) to improve model convergence.
+> **Note:** `flash-attn` may require a compatible CUDA toolkit and can take a long time to compile. If installation fails, please verify your CUDA, PyTorch, and compiler versions first.
 
-##### Step 2: Training the decoder
-The training script to be executed for this part is:
-```
-cd script
-./run_distill_stage1_soft_embedding_decoder.sh
-```
-> This Step requires the best model weights from **Steps 1**.
-##### Step 3: Joint Optimization
-The training script to be executed for this part is:
-```
-cd script
-./run_distill_stage1_soft_embedding_union.sh
-```
-> **Note:** This section saves only the LoRA adapter weights. To obtain the full model weights, use the `merge_lora.py` script to merge the adapter with the base model.
-> This Step requires the best model weights from **Steps 1** and **Step 2**.
+## Data Preparation
 
-#### Phase 2: Learning Latent Tokens
-In this phase, we first use the encoder trained in Phase 1 to generate latent tokens—represented as probability distributions over the vocabulary—for each training sample. Then, the trained decoder is used to learn both the latent tokens and the final output answer.
+Download the training and evaluation data from Hugging Face:
 
-##### Step 1: Caching latent tokens
-If the model uses **LoRA weights** (i.e., the result saved in **Step 3 of Phase 1**), run the `generate_latent_soft_label_union_hf.py` script directly.
+- [DJCheng/Latent-SFT-Data](https://huggingface.co/datasets/DJCheng/Latent-SFT-Data)
 
-⚠️ Make sure the compression rate parameter is consistent with the one used during training.
+Place or extract the files under the repository-level `data/` directory:
 
-If the model uses **full weights** (i.e., generated in **Step 1 of Phase 1**), run the `generate_latent_soft_label_hf.py` script instead.
-
-##### Step 2: Training the decoder
-The training script to be executed for this part is:
-```
-cd script
-./run_distill_stage2_soft_embedding.sh
+```bash
+mkdir -p data
+# Example only. Replace with the actual files downloaded from Hugging Face.
+# unzip Latent-SFT-Data.zip -d data/
 ```
 
-### Model Evaluation
-We provide evaluations on six mathematical reasoning datasets — **GSM8k**, **GSM-Hard**, **SVAMP**, **MultiArith**, **Math500**, and **AIME24** — using two implementation frameworks: **Transformers** and **SGLang**.
+After preparation, update the `train_data_path` field in the corresponding shell scripts, for example:
 
-#### Transformers
-Evaluation using the **Transformers** framework is relatively slow and is best suited for **small models** and **short datasets**.
-
-The following evaluation scripts are provided:
-
-📘 **Phase 1**:
-- `eval_soft_embedding_encoder_hf.py` – for evaluating **encoder** training
-- `eval_soft_embedding_decoder_hf.py` – for evaluating **decoder** training
-- `eval_soft_embedding_union_hf.py` – for evaluating the **joint encoder-decoder** model
-
-📗 **Phase 2**:
-- `eval_soft_embedding_latent_model_hf.py` – for evaluating **in-distribution** datasets
-- `eval_ood_soft_embedding_latent_model.py` – for evaluating **out-of-distribution** datasets
-
-#### SGLang
-The **SGLang** framework is used to enable **faster evaluation**, especially for **larger models** and **longer sequences**. However, this speed-up may come at the cost of slightly reduced accuracy in certain cases. Some parts of the code have been modified based on the original [Soft-Thinking](https://github.com/eric-ai-lab/Soft-Thinking) library to support our specific evaluation workflow.
-
-First, navigate to the modified SGLang directory. Then, create a new virtual environment and install the required dependencies. ⚠️ **It is strongly recommended to keep this environment *separate* from the training environment to avoid dependency conflicts.**
-```
-conda create -n sg python=3.11 -y && conda activate sg
-pip install --upgrade pip
-pip install torch transformers accelerate jsonlines math_verify openai torch_memory_saver
-pip install flash_attn --no-build-isolation
-
-cd sglang_latent_reasoning_pkg
-pip install -e "python[all]"
-cd ..
-```
-Next, run the evaluation file directly, which will output the inference results of the model. Note that you need to modify the corresponding path.
-```
-python eval_soft_embedding_sglang.py
-```
-Finally, the score is obtained through the scoring file. Note that you need to modify the corresponding path.
-```
-python get_math_score.py
+```bash
+train_data_path="${REPO_ROOT}/data/<your-train-file>.jsonl"
 ```
 
-### Best Model Weights
-The trained model weights are available at the following links:
-- [Llama3.2-Instruct-1B-Latent(2)](https://huggingface.co/DJCheng/Llama3.2-Instruct-1B-Latent-2/tree/main)
-- [Llama3.2-Instruct-1B-Latent(4)](https://huggingface.co/DJCheng/Llama3.2-Instruct-1B-Latent-4/tree/main)
+Each training example is expected to provide the fields required by the stage-specific data pipeline, such as `problem`, `solution`, and `cot_answer` depending on the stage.
 
-⚠️ Due to certain constraints, the Deepseek-distill-qwen-7B-Latent model weights are not yet released, but will be made available soon.
+## Training Pipeline
+
+Latent-SFT follows the paper's two-stage procedure:
+
+1. **Stage 1: Latent-chain construction**
+   - Learn an encoder-decoder system that compresses explicit CoT traces into latent vocabulary-space superpositions.
+   - This corresponds to **Latent-Vocab** and **Latent-Chain** in the paper.
+2. **Stage 2: Autonomous latent reasoning**
+   - Discard the stage-1 encoder.
+   - Train the LLM to generate the latent chain by itself and then decode the final answer.
+   - This corresponds to **Latent-Optim** in the paper.
+
+The recommended execution order is:
+
+```bash
+bash script/run_distill_stage1_encoder_{task}.sh
+bash script/run_distill_stage1_decoder_{task}.sh
+bash script/run_distill_stage1_union_{task}.sh
+python generate_latent_soft_label_lora_batch.py ...
+python merge_lora.py ...
+bash script/run_distill_stage2_{task}.sh
+```
+
+Replace `{task}` with the desired task configuration, such as `gsm8k` or `math500`.
+
+### Step 1: Train the Stage-1 Encoder
+
+```bash
+bash script/run_distill_stage1_encoder_{task}.sh
+```
+
+This step trains the latent token encoder. Edit the following important fields in the script:
+
+```bash
+output_name="<your-run-name>"
+encoder_name_or_path="<path-or-hf-id-of-your-base-model>"
+decoder_name_or_path="<path-or-hf-id-of-your-base-model>"
+train_data_path="${REPO_ROOT}/data/<your-train-file>.jsonl"
+compression_rate=2
+topk_interpolation=10
+```
+
+Important parameters:
+
+- **`compression_rate`**: Controls how many explicit CoT tokens are compressed into one latent token. Larger values produce shorter latent chains but make optimization harder.
+- **`topk_interpolation`**: Controls the number of vocabulary tokens used to approximate each latent state as a lexical superposition. Larger values preserve more lexical information but increase memory and compute cost.
+
+### Step 2: Train the Stage-1 Decoder
+
+```bash
+bash script/run_distill_stage1_decoder_{task}.sh
+```
+
+This step trains the decoder conditioned on latent chains generated by the encoder. Set:
+
+```bash
+encoder_name_or_path="<path-to-stage1-encoder-checkpoint>"
+decoder_name_or_path="<path-or-hf-id-of-your-base-model>"
+train_data_path="${REPO_ROOT}/data/<your-train-file>.jsonl"
+compression_rate=2
+topk_interpolation=10
+```
+
+The `compression_rate` and `topk_interpolation` should remain consistent with the encoder configuration unless you intentionally run a new ablation.
+
+### Step 3: Joint Stage-1 Optimization
+
+```bash
+bash script/run_distill_stage1_union_{task}.sh
+```
+
+This step jointly optimizes the encoder-decoder system. Set:
+
+```bash
+encoder_name_or_path="<path-to-stage1-encoder-checkpoint-hf>"
+decoder_name_or_path="<path-to-stage1-decoder-checkpoint-hf>"
+train_data_path="${REPO_ROOT}/data/<your-train-file>.jsonl"
+compression_rate=2
+topk_interpolation=10
+```
+
+The union run saves LoRA adapter weights. These weights are used in the next step to generate latent soft labels.
+
+### Step 4: Generate Latent Soft Labels
+
+Use the stage-1 union model to generate chunked latent soft labels for the training set:
+
+```bash
+python generate_latent_soft_label_lora_batch.py \
+  --encoder_model_path <path-to-stage1-encoder-checkpoint-hf> \
+  --decoder_model_path <path-to-stage1-decoder-checkpoint-hf> \
+  --lora_path <path-to-stage1-union-lora-adapter> \
+  --save_path <path-to-save-latent-soft-label-chunks> \
+  --data_path data/<your-train-file>.jsonl \
+  --mp_size 8 \
+  --batch_size 16 \
+  --dtype bfloat16 \
+  --compression_rate 2 \
+  --topk_interpolation 10
+```
+
+This script writes chunked files named like:
+
+```text
+batch_0_1000.pt
+batch_1000_2000.pt
+...
+```
+
+These chunks are later consumed by `run_distill_stage2_{task}.sh` through `train_latent_soft_label_path`.
+
+Important parameters:
+
+- **`--compression_rate`** must match the Stage-1 compression rate.
+- **`--topk_interpolation`** should match the Stage-1 top-k superposition setting.
+- **`--mp_size`** controls the number of GPU worker processes used for latent-label generation.
+- **`--batch_size`** controls per-dispatch generation batch size.
+
+### Step 5: Merge Stage-1 Decoder LoRA Weights
+
+Before Stage 2, merge the decoder LoRA adapter into the base decoder checkpoint:
+
+```bash
+python merge_lora.py \
+  --base_model_path <path-to-stage1-decoder-base-or-hf-checkpoint> \
+  --lora_path <path-to-stage1-decoder-lora-adapter> \
+  --output_path <path-to-save-merged-decoder> \
+  --output_subdir decoder_hf \
+  --dtype bfloat16 \
+  --attn_implementation sdpa \
+  --device_map auto
+```
+
+The merged model will be saved to:
+
+```text
+<path-to-save-merged-decoder>/decoder_hf
+```
+
+Use this merged decoder checkpoint as the initialization for Stage 2.
+
+### Step 6: Train the Stage-2 Latent Reasoning Model
+
+```bash
+bash script/run_distill_stage2_{task}.sh
+```
+
+Edit the following fields:
+
+```bash
+output_name="<your-stage2-run-name>"
+latent_model_path="<path-to-merged-stage1-decoder-hf>"
+train_data_path="${REPO_ROOT}/data/<your-train-file>.jsonl"
+train_latent_soft_label_path="<path-to-train-latent-soft-label-chunks>"
+```
+
+Stage 2 optimizes the model with CE loss on final answers and KL loss on latent soft labels. The key Gumbel-Softmax parameters are:
+
+```bash
+--add_gumbel_noise True \
+--gumbel_temperature 1.0 \
+--noise_scale 1.0 \
+```
+
+Recommended practice:
+
+- Keep **`--gumbel_temperature 1.0`** fixed unless you are deliberately running a controlled ablation.
+- Tune **`--noise_scale`** to control the strength of stochastic perturbation.
+- Use **`--add_gumbel_noise True`** for the default Latent-Optim setting.
+
+## Parameter Guide
+
+| Parameter | Stage | Meaning | Recommendation |
+|---|---:|---|---|
+| `compression_rate` | Stage 1 / soft-label generation | Number of explicit CoT tokens compressed per latent token | Main control for latent chain length; keep consistent across Stage 1 and label generation |
+| `topk_interpolation` | Stage 1 / soft-label generation | Number of vocabulary tokens used in each latent superposition | Keep consistent when transferring labels to Stage 2 |
+| `--add_gumbel_noise` | Stage 2 | Enables stochastic perturbation of latent soft labels | Recommended: `True` |
+| `--gumbel_temperature` | Stage 2 | Temperature for Gumbel-Softmax normalization | Recommended: keep at `1.0` |
+| `--noise_scale` | Stage 2 | Strength of injected Gumbel noise | Recommended knob for robustness/ablation |
+| `--ce_w` | Stage 2 | Weight of final-answer CE loss | Default: `1.0` |
+| `--kl_w` | Stage 2 | Weight of latent soft-label KL loss | Default: `1.0` |
+
+## Evaluation
+
+The repository provides batch evaluation scripts under `eval/`, including:
+
+```text
+eval/eval_encoder_hf_batch.py
+eval/eval_decoder_hf_batch.py
+eval/eval_union_hf_batch.py
+eval/eval_latent_model_hf_batch.py
+eval/eval_math500_sglang.py
+```
+
+Typical usage is to edit the model path, data path, output path, and decoding parameters inside the corresponding evaluation script, then launch it with Python.
+
+For final reporting, please ensure that output filenames include the task name, model name, and important sampling or latent-reasoning parameters to avoid overwriting results from different experimental settings.
+
+## Citation
+
+If you find this repository useful, please cite our papers:
+
+```bibtex
+@article{deng2025latentreasoning,
+  title        = {LLM Latent Reasoning as Chain of Superposition},
+  author       = {Deng, Jingcheng and Pang, Liang and Wei, Zihao and Xu, Shicheng and Duan, Zenghao and Xu, Kun and Song, Yang and Shen, Huawei and Cheng, Xueqi},
+  journal      = {arXiv preprint arXiv:2510.15522},
+  year         = {2025},
+  url          = {https://arxiv.org/abs/2510.15522}
+}
+
+@article{deng2026latentgrpo,
+  title        = {Latent-GRPO: Group Relative Policy Optimization for Latent Reasoning},
+  author       = {Deng, Jingcheng and Wei, Zihao and Pang, Liang and Wu, Junhong and Xu, Shicheng and Duan, Zenghao and Shen, Huawei},
+  journal      = {arXiv preprint arXiv:2604.27998},
+  year         = {2026},
+  url          = {https://arxiv.org/abs/2604.27998}
+}
+```
+
+## Acknowledgements
+
+This project builds on the Hugging Face Transformers, PyTorch, DeepSpeed, PEFT, and FlashAttention ecosystems. We thank the open-source community for providing the foundation that makes efficient latent reasoning research possible.
+
+## License
+
+Please refer to the repository license for usage terms.
