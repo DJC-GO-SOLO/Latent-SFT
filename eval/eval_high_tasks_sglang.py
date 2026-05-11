@@ -238,7 +238,9 @@ def build_prompt_text_qwen(item, tokenizer, dataset_name=None):
     prompt = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    return prompt# + "<think>"
+    if prompt.rstrip().endswith("<think>"):
+        return prompt
+    return prompt + "<think>"
 
 
 def get_last_token_id(tokenizer, text: str) -> int:
