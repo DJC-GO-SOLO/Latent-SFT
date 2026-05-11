@@ -478,7 +478,7 @@ You can evaluate these checkpoints directly with the corresponding Transformer-b
 If you find this repository useful, please cite our papers:
 
 ```bibtex
-@article{deng2025latentreasoning,
+@article{deng2025latentsft,
   title        = {LLM Latent Reasoning as Chain of Superposition},
   author       = {Deng, Jingcheng and Pang, Liang and Wei, Zihao and Xu, Shicheng and Duan, Zenghao and Xu, Kun and Song, Yang and Shen, Huawei and Cheng, Xueqi},
   journal      = {arXiv preprint arXiv:2510.15522},
