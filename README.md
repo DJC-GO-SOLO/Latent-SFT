@@ -17,8 +17,8 @@
 
 ## News
 
-- **Latent GRPO**: Our follow-up RL-stage work extends latent-chain reasoning to GRPO-style reinforcement learning. See the paper here: [Latent GRPO](https://arxiv.org/pdf/2604.27998).
-- **2026-01-30**: The latest version of the paper is available on arXiv: [LLM Latent Reasoning as Chain of Superposition](https://arxiv.org/abs/2510.15522).
+- **Latent GRPO**: Our follow-up RL-stage work extends latent-chain reasoning to GRPO-style reinforcement learning. See the paper here: [Latent-GRPO: Group Relative Policy Optimization for Latent Reasoning](https://arxiv.org/pdf/2604.27998).
+- **2026-01-30**: The latest version of the paper is available on arXiv: [Latent-SFT: LLM Latent Reasoning as Chain of Superposition](https://arxiv.org/abs/2510.15522).
 - **Code release**: This repository provides the training, latent soft-label generation, LoRA merging, and evaluation pipeline used by Latent-SFT.
 
 ## Overview
@@ -343,6 +343,8 @@ Recommended practice:
 - Tune **`--noise_scale`** to control the strength of stochastic perturbation.
 - Use **`--add_gumbel_noise True`** for the default Latent-Optim setting.
 
+After Stage 2, evaluate checkpoints according to the task difficulty. We provide two inference frameworks: the Transformer-based evaluator is more accurate but slower, and is recommended for low-difficulty tasks; the SGLang-based evaluator is faster, and is recommended for high-difficulty tasks. See the [Evaluation](#evaluation) section for detailed commands.
+
 ## Parameter Guide
 
 | Parameter | Stage | Meaning | Recommendation |
@@ -357,19 +359,119 @@ Recommended practice:
 
 ## Evaluation
 
-The repository provides batch evaluation scripts under `eval/`, including:
+Stage-1 evaluation commands are provided inline in the training pipeline above because each Stage-1 checkpoint is used to select the input checkpoint for the next step. For final Stage-2 evaluation, this repository supports two settings:
 
-```text
-eval/eval_encoder_hf_batch.py
-eval/eval_decoder_hf_batch.py
-eval/eval_union_hf_batch.py
-eval/eval_latent_model_hf_batch.py
-eval/eval_math500_sglang.py
+1. **Transformer-based evaluation** for low-difficulty math tasks.
+2. **SGLang-based evaluation** for high-difficulty math tasks.
+
+### Transformer-Based Evaluation
+
+Use `eval/eval_latent_model_hf_batch.py` for low-difficulty tasks such as the GSM8K-family benchmarks. This evaluator runs with the standard Latent-SFT environment described in [Installation](#installation).
+
+```bash
+python eval/eval_latent_model_hf_batch.py \
+  --dataset <GSM8k|Math500|AIME24> \
+  --data_path data/<your-eval-file>.jsonl \
+  --check_point <checkpoint-step> \
+  --latent_model_path <path-to-stage2-run-dir> \
+  --save_path <path-to-save-eval-results> \
+  --mp_size 8 \
+  --batch_size 128 \
+  --max_new_tokens 128 \
+  --topk_interpolation 10 \
+  --add_gumbel_noise False \
+  --gumbel_temperature 1.0 \
+  --noise_scale 1.0
 ```
 
-Typical usage is to edit the model path, data path, output path, and decoding parameters inside the corresponding evaluation script, then launch it with Python.
+Important parameters:
 
-For final reporting, please ensure that output filenames include the task name, model name, and important sampling or latent-reasoning parameters to avoid overwriting results from different experimental settings.
+- **`--latent_model_path`**: Stage-2 run directory. The script loads `<latent_model_path>/checkpoint-<check_point>/hf`.
+- **`--data_path`**: Evaluation jsonl file, for example `GSM8k-Aug-test.jsonl`, `GSM8k-Hard-test.jsonl`, `Multiarith-test.jsonl`, or `Svamp-test.jsonl`.
+- **`--topk_interpolation`** should match the intended Stage-2 latent decoding setting.
+- **`--add_gumbel_noise`** is set to `False` by default for evaluation.
+
+### SGLang-Based Evaluation
+
+Use the SGLang-based evaluators for high-difficulty tasks. This setting uses the customized SGLang package under `sglang_latent_reasoning_pkg/`, so we recommend creating a separate environment:
+
+```bash
+conda create -n latent_reasoning python=3.11.13 -y
+conda activate latent_reasoning
+pip install pip==25.2
+pip install torch==2.6.0 transformers==4.51.1 tensorboard==2.20.0 sgl_kernel==0.1.1 accelerate==1.10.1 torch_memory_saver==0.0.8 uvloop==0.21.0 jsonlines math_verify openai
+pip install flash_attn==2.7.3 --no-build-isolation
+
+cd sglang_latent_reasoning_pkg
+pip install -e "python[all]"
+cd ..
+```
+
+> **Note:** `flash_attn` can take a long time to compile. If you encounter an undefined-symbol error, reinstall it with `--no-build-isolation` or install a compatible wheel from the official FlashAttention repository.
+
+For single-dataset evaluation, run:
+
+```bash
+python eval/eval_math500_sglang.py \
+  --base_model_dir <path-to-stage2-run-dir> \
+  --data_path data/<high-difficulty-eval-file>.jsonl \
+  --output_path <path-to-save-eval-results>.jsonl \
+  --ckpt_start <first-checkpoint-step> \
+  --ckpt_step <checkpoint-interval> \
+  --ckpt_count <num-checkpoints-to-evaluate> \
+  --gpu_ids 0,1,2,3,4,5,6,7 \
+  --max_new_tokens 4096 \
+  --temperature 0.6 \
+  --top_p 0.95 \
+  --max_topk 10 \
+  --add_noise_gumbel_softmax False \
+  --gumbel_softmax_temperature 1.0 \
+  --noise_scale 1.0
+```
+
+This single-dataset evaluator does not include GPQA. To evaluate GPQA together with the other high-difficulty datasets, use the all-in-one script below.
+
+For one-click evaluation on all high-difficulty datasets, run:
+
+```bash
+python eval/eval_high_tasks_sglang.py \
+  --model_path <path-to-stage2-checkpoint-hf> \
+  --output_path <path-to-save-high-task-results>.json \
+  --gpu_ids 0,1,2,3,4,5,6,7 \
+  --math500_path data/Math-500-test.jsonl \
+  --aime24_path data/AIME-2024-test.jsonl \
+  --aime25_path data/AIME-2025-test.jsonl \
+  --gpqa_path data/GPQA-test.jsonl \
+  --max_new_tokens 4096 \
+  --temperature 0.6 \
+  --top_p 0.95 \
+  --max_topk 10 \
+  --add_noise_gumbel_softmax False \
+  --gumbel_softmax_temperature 1.0 \
+  --noise_scale 1.0
+```
+
+This script evaluates `Math-500`, `AIME-2024`, `AIME-2025`, and `GPQA` together. It reports per-dataset accuracy, average output length, pass@k metrics, and macro-average pass@k, and also writes a lightweight summary file next to the main output JSON.
+
+Important parameters:
+
+- **`--base_model_dir`**: Stage-2 run directory containing `checkpoint-*/hf` subdirectories, used by `eval_math500_sglang.py`.
+- **`--model_path`**: Specific Stage-2 HF checkpoint path, used by `eval_high_tasks_sglang.py`.
+- **`--data_path`**: High-difficulty evaluation file, for example `Math-500-test.jsonl`.
+- **`--math500_path`**, **`--aime24_path`**, **`--aime25_path`**, and **`--gpqa_path`** specify the datasets used by the all-in-one high-task evaluator.
+- **`--ckpt_start`**, **`--ckpt_step`**, and **`--ckpt_count`** control which Stage-2 checkpoints are evaluated.
+- **`--max_topk`** is equivalent to the `topk_interpolation` parameter used during training and should stay consistent with it.
+- **`--add_noise_gumbel_softmax`** is set to `False` by default for evaluation.
+- **`--gumbel_softmax_temperature`** and **`--noise_scale`** control the latent decoding behavior when Gumbel noise is enabled.
+
+### Released Checkpoints
+
+We also release ready-to-evaluate Latent-SFT checkpoints on Hugging Face:
+
+- [`DJCheng/LLaMA3.2-1B-Instruct-Latent-SFT-Top10`](https://huggingface.co/DJCheng/LLaMA3.2-1B-Instruct-Latent-SFT-Top10)
+- [`DJCheng/Qwen2.5-Math-7B-Latent-SFT-4k-Top10`](https://huggingface.co/DJCheng/Qwen2.5-Math-7B-Latent-SFT-4k-Top10)
+
+You can evaluate these checkpoints directly with the corresponding Transformer-based or SGLang-based evaluation scripts above.
 
 ## Citation
 
@@ -397,6 +499,8 @@ If you find this repository useful, please cite our papers:
 
 This project builds on the Hugging Face Transformers, PyTorch, DeepSpeed, PEFT, and FlashAttention ecosystems. We thank the open-source community for providing the foundation that makes efficient latent reasoning research possible.
 
+We also thank the [Soft-Thinking](https://github.com/eric-ai-lab/Soft-Thinking) project, which provided the base version for our SGLang framework development.
+
 ## License
 
-Please refer to the repository license for usage terms.
+This project is released under the MIT License. See [LICENSE](LICENSE) for details.
