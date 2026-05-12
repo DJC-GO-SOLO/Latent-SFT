@@ -119,6 +119,7 @@ Training data examples are expected to contain the `problem`, `cot`, and `cot_an
 
 > [!IMPORTANT]
 > The data-format handling in this codebase is tightly coupled to these schemas. When using your own data, please check the field names and contents carefully before training or evaluation.
+> If you apply Latent-SFT to a reasoning model, please handle `<think>` carefully in the chat template or prompt format. In particular, make sure `<think>` is inserted at the appropriate position to start the reasoning mode when required by the model.
 
 ## Training Pipeline
 
